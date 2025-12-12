@@ -151,6 +151,7 @@ async function getTasks (req, res, options = {}) {
     challenge,
     group,
     dueDate,
+    scheduledFilter,
   } = options;
 
   let query;
@@ -201,12 +202,39 @@ async function getTasks (req, res, options = {}) {
     }
   }
 
+  // Helper function to apply scheduled filter date range
+  const applyScheduledFilter = (queryObj) => {
+    if (scheduledFilter && scheduledFilter !== 'all') {
+      const now = moment().startOf('day');
+      const startDate = now.toDate();
+      let endDate;
+      
+      if (scheduledFilter === 'today') {
+        endDate = now.clone().endOf('day').toDate();
+      } else if (scheduledFilter === 'week') {
+        endDate = now.clone().add(7, 'days').endOf('day').toDate();
+      } else if (scheduledFilter === 'month') {
+        endDate = now.clone().add(1, 'month').endOf('day').toDate();
+      }
+      
+      if (endDate) {
+        queryObj.date = {
+          $gte: startDate,
+          $lte: endDate,
+        };
+      }
+    } else if (scheduledFilter === 'all') {
+      queryObj.date = { $exists: true };
+    }
+  };
+
   const { type } = req.query;
 
   if (type) {
     if (type === 'todos') {
       query.type = 'todo';
       query.completed = false; // Exclude completed todos
+      applyScheduledFilter(query);
     } else if (type === 'completedTodos' || type === '_allCompletedTodos') { // _allCompletedTodos is currently in BETA and is likely to be removed in future
       limit = 0; // no limit, the 30/90 days of data for subscribers is handled during cron
 
@@ -235,9 +263,12 @@ async function getTasks (req, res, options = {}) {
       query.type = type.slice(0, -1); // removing the final "s"
     }
   } else if (!challenge) {
+    const todoQuery = { type: 'todo', completed: false };
+    applyScheduledFilter(todoQuery);
+    
     query.$and = [{
-      $or: [ // Exclude completed todos
-        { type: 'todo', completed: false },
+      $or: [ // Exclude todos that are completed (with optional date filtering)
+        todoQuery,
         { type: { $in: ['habit', 'daily', 'reward'] } },
       ],
     }];

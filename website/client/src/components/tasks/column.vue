@@ -25,17 +25,61 @@
         v-if="typeFilters.length > 1"
         class="filters d-flex justify-content-end"
       >
-        <div
-          v-for="filter in typeFilters"
-          :key="filter"
-          class="filter small-text"
-          :class="{active: activeFilter.label === filter}"
-          tabindex="0"
-          @click="activateFilter(type, filter)"
-          @keypress.enter="activateFilter(type, filter)"
-        >
-          {{ $t(filter) }}
-        </div>
+        <template v-for="filter in typeFilters">
+          <div
+            v-if="filter !== 'scheduled'"
+            :key="filter"
+            class="filter small-text"
+            :class="{active: activeFilter.label === filter}"
+            tabindex="0"
+            @click="activateFilter(type, filter)"
+            @keypress.enter="activateFilter(type, filter)"
+          >
+            {{ $t(filter) }}
+          </div>
+          <div
+            v-else
+            :key="filter"
+            class="filter small-text scheduled-dropdown"
+            :class="{active: activeFilter.label === 'scheduled'}"
+          >
+            <span
+              class="scheduled-dropdown-toggle"
+              @click="toggleScheduledDropdown"
+            >
+              {{ $t('scheduled') + ': ' + $t(scheduledSubfilter) }}
+            </span>
+            <div
+              v-if="scheduledDropdownOpen"
+              class="scheduled-dropdown-menu"
+            >
+              <div
+                class="dropdown-option"
+                @click="setScheduledSubfilter('today')"
+              >
+                {{ $t('today') }}
+              </div>
+              <div
+                class="dropdown-option"
+                @click="setScheduledSubfilter('week')"
+              >
+                {{ $t('week') }}
+              </div>
+              <div
+                class="dropdown-option"
+                @click="setScheduledSubfilter('month')"
+              >
+                {{ $t('month') }}
+              </div>
+              <div
+                class="dropdown-option"
+                @click="setScheduledSubfilter('all')"
+              >
+                {{ $t('all') }}
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
     <div
@@ -287,6 +331,68 @@
     }
   }
 
+  .scheduled-dropdown {
+    position: relative;
+
+    .scheduled-dropdown-toggle {
+      cursor: pointer;
+      display: inline-block;
+      padding-right: 14px;
+      position: relative;
+
+      &::after {
+        content: '';
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 0;
+        height: 0;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 5px solid $gray-100;
+        transition: border-top-color 0.2s ease;
+      }
+    }
+
+    &.active .scheduled-dropdown-toggle::after {
+      border-top-color: $purple-50;
+    }
+
+    .scheduled-dropdown-menu {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      background: $white;
+      border: 1px solid $gray-400;
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      margin-top: 4px;
+      z-index: 1000;
+      min-width: 120px;
+
+      .dropdown-option {
+        padding: 8px 16px;
+        cursor: pointer;
+        color: $gray-50;
+        white-space: nowrap;
+
+        &:hover {
+          background: $gray-700;
+          color: $purple-200;
+        }
+
+        &:first-child {
+          border-radius: 4px 4px 0 0;
+        }
+
+        &:last-child {
+          border-radius: 0 0 4px 4px;
+        }
+      }
+    }
+  }
+
   .column-background {
     position: absolute;
     width: 100%;
@@ -433,6 +539,8 @@ export default {
 
       selectedItemToBuy: {},
       dragging: false,
+      scheduledSubfilter: 'all',
+      scheduledDropdownOpen: false,
     };
   },
   computed: {
@@ -541,6 +649,16 @@ export default {
       this.loadCompletedTodos();
     });
     this.handleExternalLinks();
+
+    // Add click-outside handler for scheduled dropdown
+    this.handleClickOutside = event => {
+      if (!this.scheduledDropdownOpen) return;
+      const dropdown = this.$el.querySelector('.scheduled-dropdown');
+      if (dropdown && !dropdown.contains(event.target)) {
+        this.scheduledDropdownOpen = false;
+      }
+    };
+    document.addEventListener('click', this.handleClickOutside);
   },
   updated () {
     this.handleExternalLinks();
@@ -549,6 +667,11 @@ export default {
     this.$root.$off('buyModal::boughtItem');
     if (this.type !== 'todo') return;
     this.$root.$off(EVENTS.RESYNC_COMPLETED);
+    
+    // Remove click-outside handler
+    if (this.handleClickOutside) {
+      document.removeEventListener('click', this.handleClickOutside);
+    }
   },
   methods: {
     ...mapActions({
@@ -655,7 +778,16 @@ export default {
         await this.createGroupTasks({ groupId: this.group.id, tasks });
         this.sync();
       } else {
-        this.createTask(tasks);
+        // If on scheduled tab, refetch after creation to apply backend filter
+        if (this.type === 'todo' && this.activeFilter.label === 'scheduled') {
+          await this.createTask(tasks);
+          await this.$store.dispatch('tasks:fetchUserTasks', { 
+            forceLoad: true,
+            scheduledFilter: this.scheduledSubfilter,
+          });
+        } else {
+          await this.createTask(tasks);
+        }
       }
       this.$refs.quickAdd.blur();
       return true;
@@ -666,7 +798,12 @@ export default {
     taskSummary (task) {
       this.$emit('taskSummary', task);
     },
-    activateFilter (type, filter = '', skipSave = false) {
+    activateFilter (type, filter = '', skipSave = false, subfilter = null) {
+      // Store the subfilter if provided
+      if (subfilter && filter === 'scheduled') {
+        this.scheduledSubfilter = subfilter;
+      }
+      
       // Needs a separate API call as this data may not reside in store
       if (type === 'todo' && filter === 'complete2') {
         if (this.group && this.group._id) {
@@ -694,6 +831,28 @@ export default {
         const propertyToUpdate = `preferences.tasks.activeFilter.${type}`;
         this.$store.dispatch('user:set', { [propertyToUpdate]: filter });
       }
+      // If the scheduled filter is activated for todos, fetch scheduled tasks
+      if (type === 'todo' && filter === 'scheduled') {
+        const scheduledFilter = this.scheduledSubfilter || 'all';
+        this.$store.dispatch('tasks:fetchUserTasks', {
+          forceLoad: true,
+          scheduledFilter,
+        });
+      }
+    },
+    toggleScheduledDropdown () {
+      this.scheduledDropdownOpen = !this.scheduledDropdownOpen;
+    },
+    async setScheduledSubfilter (subfilter) {
+      this.scheduledSubfilter = subfilter;
+      this.scheduledDropdownOpen = false;
+      // Activate the scheduled filter
+      this.activateFilter(this.type, 'scheduled', false, subfilter);
+      // Fetch tasks with the new filter from backend
+      await this.$store.dispatch('tasks:fetchUserTasks', { 
+        forceLoad: true,
+        scheduledFilter: subfilter,
+      });
     },
     setColumnBackgroundVisibility () {
       this.$nextTick(() => {
